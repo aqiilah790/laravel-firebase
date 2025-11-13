@@ -55,20 +55,74 @@ class AdminController extends Controller
             // Kirim email verifikasi
             $this->auth->sendEmailVerificationLink($request->email);
 
-            // Simpan data awal di database
-            $this->database->getReference('mahasiswa')->push([
+            // Simpan data mahasiswa dengan key = UID
+            $this->database->getReference("mahasiswa/{$uid}")->set([
                 'uid' => $uid,
                 'nama' => $request->nama,
                 'email' => $request->email,
                 'nim' => $request->nim ?? '',
                 'jurusan' => $request->jurusan ?? '',
                 'angkatan' => $request->angkatan ?? '',
-                'verified' => false
+                'verified' => true
             ]);
 
-            return response()->json(['success' => 'User berhasil ditambahkan.']);
+            return response()->json(['success' => 'User berhasil ditambahkan!']);
         } catch (\Throwable $e) {
             return response()->json(['error' => $e->getMessage()]);
         }
     }
+
+    // Update user via AJAX
+    public function updateUser(Request $request)
+    {
+        $id = $request->id; // ini harus UID Firebase Auth
+
+        try {
+            // Update di Firebase Authentication
+            $updateAuthData = [
+                'displayName' => $request->nama,
+                'email' => $request->email,
+            ];
+
+            if (!empty($request->password)) {
+                $updateAuthData['password'] = $request->password;
+            }
+
+            // Update data Auth (kalau user masih ada)
+            $this->auth->updateUser($id, $updateAuthData);
+
+            // Update di Realtime Database
+            $updateDB = [
+                'nama' => $request->nama,
+                'email' => $request->email,
+                'nim' => $request->nim ?? '',
+                'jurusan' => $request->jurusan ?? '',
+                'angkatan' => $request->angkatan ?? '',
+            ];
+
+            $this->database->getReference("mahasiswa/{$id}")->update($updateDB);
+
+            return response()->json(['success' => 'Data berhasil diperbarui!']);
+        } catch (\Throwable $e) {
+            return response()->json(['error' => $e->getMessage()]);
+        }
+    }
+
+    public function hapusUser(Request $request)
+{
+    $uid = $request->id;
+
+    try {
+        // Hapus user dari Firebase Authentication
+        $this->auth->deleteUser($uid);
+
+        // Hapus data dari Realtime Database
+        $this->database->getReference('mahasiswa/' . $uid)->remove();
+
+        return response()->json(['success' => 'User berhasil dihapus.']);
+    } catch (\Throwable $e) {
+        return response()->json(['error' => 'Gagal menghapus user: ' . $e->getMessage()]);
+    }
+}
+
 }

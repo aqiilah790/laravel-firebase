@@ -26,7 +26,13 @@ class AuthController extends Controller
         return view('auth.register');
     }
 
-    // --- PROSES REGISTER ---
+    // --- FORM LOGIN ---
+    public function showLogin()
+    {
+        return view('auth.login');
+    }
+
+    // --- REGISTER USER ---
     public function register(Request $request)
     {
         $request->validate([
@@ -36,15 +42,20 @@ class AuthController extends Controller
         ]);
 
         try {
-            $createdUser = $this->auth->createUserWithEmailAndPassword($request->email, $request->password);
-            $firebaseUser = $this->auth->getUserByEmail($request->email);
-            $uid = $firebaseUser->uid;
+            // Buat user baru di Firebase Auth
+            $createdUser = $this->auth->createUser([
+                'email' => $request->email,
+                'password' => $request->password,
+                'displayName' => $request->name,
+            ]);
 
-            $this->auth->updateUser($uid, ['displayName' => $request->name]);
+            $uid = $createdUser->uid;
+
+            // Kirim email verifikasi
             $this->auth->sendEmailVerificationLink($request->email);
 
-            // Simpan data awal mahasiswa
-            $this->database->getReference('mahasiswa')->push([
+            // Simpan data awal ke Realtime Database pakai UID sebagai key
+            $this->database->getReference('mahasiswa/' . $uid)->set([
                 'uid' => $uid,
                 'nama' => $request->name,
                 'email' => $request->email,
@@ -54,19 +65,13 @@ class AuthController extends Controller
                 'verified' => false,
             ]);
 
-            return redirect('/verifikasi')->with('success', 'Registrasi berhasil! Cek email untuk verifikasi.');
+            return redirect('/verifikasi')->with('success', 'Registrasi berhasil! Silakan cek email untuk verifikasi.');
         } catch (\Throwable $e) {
             return back()->with('error', 'Gagal mendaftar: ' . $e->getMessage());
         }
     }
 
-    // --- FORM LOGIN ---
-    public function showLogin()
-    {
-        return view('auth.login');
-    }
-
-    // --- PROSES LOGIN ---
+    // --- LOGIN USER ---
     public function login(Request $request)
     {
         $request->validate([
@@ -78,35 +83,27 @@ class AuthController extends Controller
             $signInResult = $this->auth->signInWithEmailAndPassword($request->email, $request->password);
             $idToken = $signInResult->idToken();
             $verifiedIdToken = $this->auth->verifyIdToken($idToken);
-
             $uid = $verifiedIdToken->claims()->get('sub');
             $user = $this->auth->getUser($uid);
 
             if (!$user->emailVerified) {
-                return back()->with('error', 'Email belum diverifikasi.');
+                return back()->with('error', 'Email belum diverifikasi. Silakan cek inbox kamu.');
             }
 
-            // Ambil data mahasiswa dari database
-            $ref = $this->database->getReference('mahasiswa');
-            $data = $ref->orderByChild('uid')->equalTo($uid)->getValue();
-            $mahasiswa = $data ? reset($data) : null;
-
-            // Jika belum lengkapi data, arahkan ke halaman lengkapi
-            if (!$mahasiswa || empty($mahasiswa['nim']) || empty($mahasiswa['jurusan']) || empty($mahasiswa['angkatan']) || !$mahasiswa['verified']) {
-                session(['firebase_user' => [
-                    'uid' => $uid,
-                    'email' => $user->email,
-                    'displayName' => $user->displayName,
-                ]]);
-                return redirect('/lengkapi-data')->with('info', 'Silakan lengkapi data terlebih dahulu.');
-            }
-
-            // Jika lengkap, simpan session dan arahkan ke mahasiswa
+            // Simpan session
             session(['firebase_user' => [
                 'uid' => $uid,
                 'email' => $user->email,
                 'displayName' => $user->displayName,
             ]]);
+
+            // Cek apakah data mahasiswa sudah lengkap
+            $data = $this->database->getReference('mahasiswa/' . $uid)->getValue();
+            if ($data) {
+                if (empty($data) || !$data['verified']) {
+                    return redirect('/lengkapi-data');
+                }
+            }
 
             return redirect('/mahasiswa');
         } catch (\Throwable $e) {
@@ -120,6 +117,7 @@ class AuthController extends Controller
         if (!session('firebase_user')) {
             return redirect('/login');
         }
+
         return view('auth.lengkapi-data');
     }
 
@@ -135,23 +133,17 @@ class AuthController extends Controller
         $user = session('firebase_user');
         $uid = $user['uid'];
 
-        $ref = $this->database->getReference('mahasiswa');
-        $data = $ref->orderByChild('uid')->equalTo($uid)->getValue();
-
-        if ($data) {
-            $key = array_key_first($data);
-            $ref->getChild($key)->update([
-                'nim' => $request->nim,
-                'jurusan' => $request->jurusan,
-                'angkatan' => $request->angkatan,
-                'verified' => true,
-            ]);
-        }
+        $this->database->getReference('mahasiswa/' . $uid)->update([
+            'nim' => $request->nim,
+            'jurusan' => $request->jurusan,
+            'angkatan' => $request->angkatan,
+            'verified' => true,
+        ]);
 
         return redirect('/mahasiswa')->with('success', 'Data berhasil dilengkapi!');
     }
 
-    // --- LOGOUT ---
+    // --- LOGOUT USER ---
     public function logout()
     {
         session()->forget('firebase_user');
